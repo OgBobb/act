@@ -12,7 +12,7 @@
 // ==/UserScript==
 
 /*──────────────── CONFIG ────────────────*/
-const API_KEY   = 'Zr9X5ZjE7LbDaSd6';   // ← your key
+const API_KEY   = 'TORN-API-KEY';   // ← your key
 const BADGE_RGB = '#c592ff';            // badge colour
 const DELAY_MS  = 4500;                 // ms between API calls (search list)
 /*════════════════════════════════════════*/
