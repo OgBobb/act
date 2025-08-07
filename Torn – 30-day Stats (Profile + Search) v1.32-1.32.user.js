@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn – 30-day Stats
 // @namespace    https://www.torn.com/
-// @version      1.67
+// @version      1.68
 // @description  30-day play-time, xanax & streak on profile pages, search lists, and all faction pages
 // @match        https://www.torn.com/profiles.php?XID=*
 // @match        https://www.torn.com/page.php?sid=UserList*
@@ -9,15 +9,27 @@
 // @match        https://www.torn.com/factions.php?step=your*
 // @match        https://www.torn.com/factions.php?step=profile&ID=*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      api.torn.com
 // @inject-into  page
 // ==/UserScript==
 
 /*──────── CONFIG ─────────*/
-const API_KEY      = 'XXXXXXXXX PUBLIC API KEY HERE  XXXXXXXXXXXXXXXX';
-const GAP_MS       = 600;
+const GAP_MS          = 600;
 const CACHE_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
 /*─────────────────────────*/
+
+let API_KEY = GM_getValue('torn_api_key');
+if (!API_KEY) {
+  API_KEY = prompt('Enter your Torn API key:');
+  if (API_KEY) {
+    GM_setValue('torn_api_key', API_KEY);
+  } else {
+    alert('⚠️ Torn API key is required for the script to work.');
+    throw new Error('No API key provided');
+  }
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -204,6 +216,16 @@ if (location.pathname.startsWith('/profiles.php')) {
     wait.style = 'font-size:11px;color:gray;';
     warn.after(wait);
 
+    // Add Reset API Key Button
+    const resetBtn = document.createElement('button');
+    resetBtn.textContent = '🔑 Reset API Key';
+    resetBtn.style = 'margin:8px 0;font-size:11px;';
+    resetBtn.onclick = () => {
+      GM_setValue('torn_api_key', '');
+      location.reload();
+    };
+    wait.after(resetBtn);
+
     async function render(day) {
       const data = await snapshot30d(XID, directGET, day);
       const box = document.createElement('div');
@@ -235,4 +257,3 @@ if (location.pathname.startsWith('/profiles.php')) {
     };
   })();
 }
-
