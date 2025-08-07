@@ -8,6 +8,8 @@
 // @match        https://www.torn.com/userlist.php*
 // @match        https://www.torn.com/factions.php?step=your*
 // @match        https://www.torn.com/factions.php?step=profile&ID=*
+// @updateURL   https://raw.githubusercontent.com/OGBobB/act/main/Torn30dayStats.user.js
+// @downloadURL https://raw.githubusercontent.com/OGBobB/act/main/Torn30dayStats.user.js
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
