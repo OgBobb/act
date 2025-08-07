@@ -1,56 +1,51 @@
 // ==UserScript==
-// @name         Torn – 30-day Stats (Profile + Search) v1.51
+// @name         Torn – 30-day Stats
 // @namespace    https://www.torn.com/
-// @version      1.51
-// @description  30-day play-time, xanax & streak on profile pages (instant) and user-search lists (global-throttled)
+// @version      1.67
+// @description  30-day play-time, xanax & streak on profile pages, search lists, and all faction pages
 // @match        https://www.torn.com/profiles.php?XID=*
 // @match        https://www.torn.com/page.php?sid=UserList*
 // @match        https://www.torn.com/userlist.php*
+// @match        https://www.torn.com/factions.php?step=your*
+// @match        https://www.torn.com/factions.php?step=profile&ID=*
 // @grant        GM_xmlhttpRequest
 // @connect      api.torn.com
 // @inject-into  page
 // ==/UserScript==
 
 /*──────── CONFIG ─────────*/
-const API_KEY      = 'TORN-API-KEY';   // ← your key
-const BADGE_COLOUR = '#c592ff';
-const GAP_MS       = 600;                      // search-page gap
+const API_KEY      = 'XXXXXXXXX PUBLIC API KEY HERE  XXXXXXXXXXXXXXXX';
+const GAP_MS       = 600;
+const CACHE_EXPIRY_MS = 2 * 60 * 60 * 1000; // 2 hours
 /*─────────────────────────*/
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-/*──────── 1) QUEUED helper (search rows) ───────*/
-let lastStart = 0;                     // timestamp of last request start
+let lastStart = 0;
 function queuedGET(url) {
-  const now   = Date.now();
+  const now = Date.now();
   const delay = Math.max(0, lastStart + GAP_MS - now);
-  lastStart   = now + delay;
-
+  lastStart = now + delay;
   return new Promise((resolve, reject) => {
-    setTimeout(() => {
-      directGET(url).then(resolve).catch(reject);
-    }, delay);
+    setTimeout(() => directGET(url).then(resolve).catch(reject), delay);
   });
 }
 
-
-/*──────── 2) DIRECT helper (profile page) ──────*/
 function directGET(url) {
   return new Promise((resolve, reject) =>
     GM_xmlhttpRequest({
-      method : 'GET',
+      method: 'GET',
       url,
-      onload : r => {
+      onload: r => {
         const j = JSON.parse(r.responseText);
         j.error ? reject(j.error) : resolve(j);
       },
-      onerror : reject,
+      onerror: reject,
       ontimeout: reject
     })
   );
 }
 
-/*──────── shared picker (nested vs array) ──────*/
 function pick(ps, path, arr) {
   let o = ps;
   for (const k of path) o = o?.[k];
@@ -59,185 +54,185 @@ function pick(ps, path, arr) {
   return 0;
 }
 
-/*──────── 30-day delta snapshot (parallel) ──────*/
-async function snapshot30d(xid, getter) {
-  const base = `https://api.torn.com/v2/user/${xid}/personalstats?stat=`;
-  const nowURL  = base + 'timeplayed,xantaken,activestreak&key=' + API_KEY;
-  const ts      = Math.floor(Date.now() / 1000) - 30 * 86400;
-  const oldURL  = base + 'timeplayed,xantaken&timestamp=' + ts + '&key=' + API_KEY;
-
-  /* fetch both at once */
-  const [nowRes, oldRes] = await Promise.all([
-    getter(nowURL).then(r => r.personalstats),
-    getter(oldURL).then(r => r.personalstats).catch(() => null)   // tolerate missing history
-  ]);
-
-  /* NOW values */
-  const nowPlay   = pick(nowRes, ['other','activity','time'],          'timeplayed');
-  const nowXan    = pick(nowRes, ['drugs','xanax'],                    'xantaken');
-  const nowStreak = pick(nowRes, ['other','activity','streak','current'], 'activestreak');
-
-  /* OLD values (may be null) */
-  const oldPlay = oldRes ? pick(oldRes, ['other','activity','time'], 'timeplayed') : nowPlay;
-  const oldXan  = oldRes ? pick(oldRes, ['drugs','xanax'],           'xantaken')   : nowXan;
-
-  return {
-    play  : Math.max(0, nowPlay - oldPlay),
-    xan   : Math.max(0, nowXan  - oldXan),
-    streak: nowStreak
-  };
+function getCachedSnapshot(xid, days) {
+  const key = `snap:${xid}:${days}`;
+  const cached = localStorage.getItem(key);
+  if (!cached) return null;
+  try {
+    const { ts, data } = JSON.parse(cached);
+    if (Date.now() - ts < CACHE_EXPIRY_MS) return data;
+  } catch (e) {
+    localStorage.removeItem(key);
+  }
+  return null;
 }
 
+function setCachedSnapshot(xid, days, data) {
+  const key = `snap:${xid}:${days}`;
+  localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data }));
+}
 
-/*──────── badge painter for search rows (inside icon cell) ─────*/
-function paintBadge(li, data) {
+async function snapshot30d(xid, getter, daySpan = 30) {
+  const cached = getCachedSnapshot(xid, daySpan);
+  if (cached) return cached;
+
+  const base = `https://api.torn.com/v2/user/${xid}/personalstats?stat=`;
+  const nowURL = base + 'timeplayed,xantaken,activestreak&key=' + API_KEY;
+  const ts = Math.floor(Date.now() / 1000) - daySpan * 86400;
+  const oldURL = base + 'timeplayed,xantaken&timestamp=' + ts + '&key=' + API_KEY;
+
+  const [nowRes, oldRes] = await Promise.all([
+    getter(nowURL).then(r => r.personalstats),
+    getter(oldURL).then(r => r.personalstats).catch(() => null)
+  ]);
+
+  const nowPlay = pick(nowRes, ['other', 'activity', 'time'], 'timeplayed');
+  const nowXan = pick(nowRes, ['drugs', 'xanax'], 'xantaken');
+  const nowStreak = pick(nowRes, ['other', 'activity', 'streak', 'current'], 'activestreak');
+
+  const oldPlay = oldRes ? pick(oldRes, ['other', 'activity', 'time'], 'timeplayed') : nowPlay;
+  const oldXan = oldRes ? pick(oldRes, ['drugs', 'xanax'], 'xantaken') : nowXan;
+
+  const result = {
+    play: Math.max(0, nowPlay - oldPlay),
+    xan: Math.max(0, nowXan - oldXan),
+    streak: nowStreak
+  };
+  setCachedSnapshot(xid, daySpan, result);
+  return result;
+}
+
+function paintBadge(row, data) {
   const s = data.play,
         d = Math.floor(s / 86400),
         h = Math.floor(s % 86400 / 3600),
         m = Math.floor(s % 3600 / 60);
 
-  const span = document.createElement('span');
-  span.textContent =
-    ` ⏱️${d}d ${h}h ${m}m  💊${data.xan} 🔥${data.streak}`;
-  span.style =
-    'display:inline-block;font-size:11px;font-weight:600;' +
-    `color:${BADGE_COLOUR};margin-left:4px;vertical-align:middle;white-space:nowrap;`;
+  let color;
+  if (s >= 86400) color = 'limegreen';     // ≥ 1 day
+  else if (s >= 10800) color = 'orange';   // ≥ 3h
+  else color = 'red';                      // < 3h
 
-  /* put it *inside* the same TD as the icons */
-  const icons = li.querySelector('span.user-icons');
-  if (icons) {
-    icons.appendChild(span);            // ← back inside the cell
+  const badge = document.createElement('div');
+  badge.textContent = `⏱️ ${d}d ${h}h ${m}m  💊${data.xan} 🔥${data.streak}`;
+  badge.className = 'torn-badge-container';
+  badge.style = `font-size:11px;font-weight:600;color:${color};margin-top:2px;white-space:nowrap;`;
+
+  const lastAction = row.querySelector('.last-action');
+  if (lastAction?.parentElement) {
+    lastAction.parentElement.appendChild(badge);
   } else {
-    li.appendChild(span);               // fallback for unexpected markup
+    row.appendChild(badge);
   }
 }
 
-
-/*════════ SEARCH / USERLIST ═════════════*/
-if (
-  (location.pathname === '/page.php' && location.search.includes('sid=UserList')) ||
-  location.pathname === '/userlist.php'
-) {
-  const boot = setInterval(() => {
-    const ul = document.querySelector('ul.user-info-list-wrap');
-    if (!ul) return;
-    clearInterval(boot);
-
-    const rowSel  = 'ul.user-info-list-wrap li';
-    const nameSel = 'a.user.name[href*="profiles.php?XID="]';
-
-    const xidOf = li => li.querySelector(nameSel)?.href.match(/XID=(\d+)/)?.[1] ?? null;
-
-    async function handleRow(li) {
-      if (li.dataset.badged) return;
-      li.dataset.badged = '1';
-      const xid = xidOf(li);
-      if (!xid) return;
-      const data = await snapshot30d(xid, queuedGET);  // throttled
-      paintBadge(li, data);
+async function fetchAndPaintWithRetry(row, xid, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const data = await snapshot30d(xid, queuedGET);
+      paintBadge(row, data);
+      return;
+    } catch (e) {
+      console.warn(`Attempt ${attempt} failed for XID=${xid}`, e);
+      if (attempt < retries) await sleep(300 * attempt);
     }
+  }
+  console.warn(`❌ All retries failed for XID=${xid}`);
+}
 
-    ul.querySelectorAll(rowSel).forEach(handleRow);
+if (location.pathname.startsWith('/factions.php')) {
+  const observer = new MutationObserver(() => {
+    (async () => {
+      const rows = Array.from(document.querySelectorAll('.table-row'));
+      for (const row of rows) {
+        if (row.dataset.badged) continue;
+        row.dataset.badged = '1';
+        const link = row.querySelector('a[href*="XID="]');
+        const match = link?.href.match(/XID=(\d+)/);
+        if (!match) continue;
+        const xid = match[1];
+        await fetchAndPaintWithRetry(row, xid);
+      }
+    })();
+  });
 
-    new MutationObserver(m => m.forEach(rec => {
-      rec.addedNodes.forEach(n => {
-        if (n.matches?.(rowSel)) handleRow(n);
-        n.querySelectorAll?.(rowSel).forEach(handleRow);
-      });
-    })).observe(ul, { childList:true, subtree:true });
+  const waitForWrap = setInterval(() => {
+    const container = document.querySelector('.faction-info-wrap');
+    if (!container) return;
+    clearInterval(waitForWrap);
+    observer.observe(container, { childList: true, subtree: true });
   }, 250);
 }
 
-/*════════ PROFILE PAGE BOXES ═════════════*/
+if ((location.pathname === '/page.php' && location.search.includes('sid=UserList')) || location.pathname === '/userlist.php') {
+  const observer = new MutationObserver(() => {
+    document.querySelectorAll('ul.user-info-list-wrap li').forEach(async li => {
+      if (li.dataset.badged) return;
+      li.dataset.badged = '1';
+      const link = li.querySelector('a.user.name[href*="profiles.php?XID="]');
+      const xid = link ? link.href.match(/XID=(\d+)/)?.[1] : null;
+      if (!xid) return;
+      const data = await snapshot30d(xid, queuedGET);
+      paintBadge(li, data);
+    });
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
 if (location.pathname.startsWith('/profiles.php')) {
   (async () => {
     const XID = new URLSearchParams(location.search).get('XID');
     if (!XID) return;
 
-    const dayOpts = [1,7,30];
-    const cache   = {};
-    const h4      = document.querySelector('.content-title h4');
+    const dayOpts = [1, 7, 30];
+    const cache = {};
+    const h4 = document.querySelector('.content-title h4');
     if (!h4) return;
 
-    const sel = Object.assign(document.createElement('select'),
-      { style:'margin:8px 0;font-size:12px;' });
-    dayOpts.forEach(d => sel.innerHTML += `<option>${d}d</option>`);
-    sel.value = '30d';
+    const sel = document.createElement('select');
+    sel.style = 'margin:8px 0;font-size:12px;';
+    dayOpts.forEach(d => sel.innerHTML += `<option value="${d}">${d}d</option>`);
+    sel.value = '30';
     h4.after(sel);
 
-    const warn = Object.assign(document.createElement('div'),
-      { style:'font-size:11px;color:orange;display:none;' });
+    const warn = document.createElement('div');
+    warn.style = 'font-size:11px;color:orange;display:none;';
     sel.after(warn);
-    const wait = Object.assign(document.createElement('div'),
-      { textContent:'Loading…', style:'font-size:11px;color:gray;' });
+
+    const wait = document.createElement('div');
+    wait.textContent = 'Loading…';
+    wait.style = 'font-size:11px;color:gray;';
     warn.after(wait);
 
-    /* unthrottled helper for profile page */
-    const fetchStat = (stat, ts=null) =>
-      directGET(
-        `https://api.torn.com/v2/user/${XID}/personalstats?stat=${stat}` +
-        (ts ? `&timestamp=${ts}` : '') + `&key=${API_KEY}`
-      ).then(r =>
-        pick(
-          r.personalstats,
-          stat==='timeplayed'   ? ['other','activity','time'] :
-          stat==='activestreak' ? ['other','activity','streak','current'] :
-          /* xantaken */          ['drugs','xanax'],
-          stat
-        )
-      );
-
-    const live = await Promise.all([
-      fetchStat('timeplayed'),
-      fetchStat('xantaken'),
-      fetchStat('activestreak')
-    ]);
-
-    function addBox(day, play, xan, streak) {
+    async function render(day) {
+      const data = await snapshot30d(XID, directGET, day);
       const box = document.createElement('div');
       box.className = `dstat-${day}`;
-      box.style = 'margin-top:4px;font-size:12px;display:none;';
-      const d = Math.floor(play/86400),
-            h = Math.floor(play%86400/3600),
-            m = Math.floor(play%3600/60);
+      box.style = 'margin-top:4px;font-size:12px;';
+      const d = Math.floor(data.play / 86400),
+            h = Math.floor(data.play % 86400 / 3600),
+            m = Math.floor(data.play % 3600 / 60);
       box.innerHTML =
         `<div style="color:#8ef">🕑 ${day}d: ${d}d ${h}h ${m}m</div>
-         <div style="color:#f88">💊 Xans: ${xan}</div>
-         <div style="color:#8f8">🔥 Streak: ${streak}d</div>`;
+         <div style="color:#f88">💊 Xans: ${data.xan}</div>
+         <div style="color:#8f8">🔥 Streak: ${data.streak}d</div>`;
       warn.after(box);
-      return box;
+      cache[day] = box;
     }
 
-    async function render(day) {
-      const since = Math.floor(Date.now()/1000) - day*86400;
-      let oldPlay = await fetchStat('timeplayed', since);
-      let oldXan  = await fetchStat('xantaken',  since);
-
-      if (day === 1 && live[0] === oldPlay) {           // cache fallback
-        const alt = since - 86400;
-        oldPlay = await fetchStat('timeplayed', alt);
-        oldXan  = await fetchStat('xantaken',  alt);
-        warn.textContent = '📅 Snapshot: ' + new Date(alt*1e3).toISOString().slice(0,10);
-      }
-      cache[day] = addBox(
-        day,
-        Math.max(0, live[0]-oldPlay),
-        Math.max(0, live[1]-oldXan),
-        live[2]
-      );
-      if (sel.value === `${day}d`) cache[day].style.display='block';
-    }
-
-    wait.style.display='block';
+    wait.style.display = 'block';
     await render(30);
-    wait.style.display='none';
+    wait.style.display = 'none';
 
     sel.onchange = async () => {
-      document.querySelectorAll('[class^="dstat-"]').forEach(b => b.style.display='none');
+      document.querySelectorAll('[class^="dstat-"]').forEach(b => b.remove());
       const d = parseInt(sel.value);
-      if (!cache[d]) { wait.style.display='block'; await render(d); wait.style.display='none'; }
-      cache[d].style.display='block';
-      warn.style.display = d===1 && warn.textContent ? 'block' : 'none';
+      if (!cache[d]) {
+        wait.style.display = 'block';
+        await render(d);
+        wait.style.display = 'none';
+      }
     };
   })();
 }
+
